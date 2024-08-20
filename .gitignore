@@ -1,0 +1,4 @@
+# ignore the env file in git
+.env
+# Ignore venv
+venv/
