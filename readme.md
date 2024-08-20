@@ -24,7 +24,7 @@ LLM Engineer is an advanced interactive command-line interface (CLI) that harnes
 
 1. Clone this repository:
    ```
-   git git clone https://github.com/akari2600/llm-engineer.git
+   git clone https://github.com/akari2600/llm-engineer.git
    cd llm-engineer
    ```
 
@@ -66,7 +66,7 @@ For other providers, check the [LiteLLM documentation](https://docs.litellm.ai/d
    llm-engineer
    ```
    💡 Tip: If you encounter issues with the script not having permission to execute, try running `chmod +x llm-engineer` to grant execute permissions.
-   
+
 8. Set up the virtual environment for code execution:
    LLM Engineer will create a virtual environment to run code the first time it executes a piece of code.
    This is just for you if you want to run the main script in a virtual environment rather than in your default one.
