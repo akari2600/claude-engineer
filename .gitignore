@@ -2,3 +2,4 @@
 .env
 # Ignore venv
 venv/
+Chat_*.md
