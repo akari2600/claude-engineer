@@ -23,9 +23,33 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.markdown import Markdown
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+from rich.table import Table
 
 import litellm
 from litellm import completion, set_verbose
+
+import argparse
+
+# Add this function at the beginning of the script, after the imports
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="LLM Engineer CLI")
+    parser.add_argument("--list-models", action="store_true", help="List the different models assigned to the different roles")
+    parser.add_argument("--show-system-message", action="store_true", help="Output the system message")
+    parser.add_argument("--show-tools", action="store_true", help="Output the available tools")
+    parser.add_argument("--use-tool", help="Use a specific tool")
+    parser.add_argument("--test-prompt", help="Pass a prompt and test which tool is picked")
+    return parser.parse_args()
+
+async def get_tool_arguments(tool_name):
+    tool = next((t for t in tools if t['function']['name'] == tool_name), None)
+    if not tool:
+        raise ValueError(f"Tool '{tool_name}' not found")
+
+    args = {}
+    for param, details in tool['function']['parameters']['properties'].items():
+        if param in tool['function']['parameters'].get('required', []):
+            args[param] = await get_user_input(f"Enter value for '{param}' ({details.get('description', '')}): ")
+    return args
 
 # Get the directory path of the current script
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -76,6 +100,25 @@ MAIN_MODEL = os.getenv("MAIN_MODEL", "anthropic/claude-3-sonnet-20240620")
 TOOLCHECKER_MODEL = os.getenv("TOOLCHECKER_MODEL", "groq/llama3-70b-8192-tool-use-preview")
 CODEEDITOR_MODEL = os.getenv("CODEEDITOR_MODEL", "codestral/codestral-latest")
 CODEEXECUTION_MODEL = os.getenv("CODEEXECUTION_MODEL", "openai/gpt-4o-mini")
+
+# The code execution environment can potentially have additional packages added to its requirements.txt file, but these
+# are the defaults. Feel free to modify this as needed.
+DEFAULT_REQUIREMENTS = """
+requests
+numpy
+pandas
+matplotlib
+seaborn
+scikit-learn
+datetime
+pytz
+json
+yaml
+pathlib
+pdb
+unittest
+mock
+"""
 
 # Token usage tracking
 token_usage = {model: {"input": 0, "output": 0} for model in [MAIN_MODEL, TOOLCHECKER_MODEL, CODEEDITOR_MODEL, CODEEXECUTION_MODEL]}
@@ -676,18 +719,33 @@ def list_files(path="."):
 def create_code_execution_env():
     try:
         env_path = os.path.join(SCRIPT_DIR, "code_execution_env")
-        subprocess.run([sys.executable, "-m", "venv", env_path], check=True)
-        
+        venv_path = os.path.join(env_path, "venv")
+        drafts_path = os.path.join(env_path, "drafts")
+
+        # Create the main directory
+        os.makedirs(env_path, exist_ok=True)
+
+        # Create the virtual environment
+        subprocess.run([sys.executable, "-m", "venv", venv_path], check=True)
+
+        # Create the drafts directory
+        os.makedirs(drafts_path, exist_ok=True)
+
+        # Create a default requirements.txt file if it doesn't exist
+        requirements_path = os.path.join(env_path, "requirements.txt")
+        if not os.path.exists(requirements_path):
+            with open(requirements_path, 'w') as f:
+                f.write(DEFAULT_REQUIREMENTS)
+
         if os.name == 'nt':  # Windows
-            pip_path = os.path.join(env_path, "Scripts", "pip")
+            pip_path = os.path.join(venv_path, "Scripts", "pip")
         else:  # macOS and Linux
-            pip_path = os.path.join(env_path, "bin", "pip")
-        
-        subprocess.run([pip_path, "install", "-r", os.path.join(SCRIPT_DIR, "requirements.txt")], check=True)
+            pip_path = os.path.join(venv_path, "bin", "pip")
+
+        subprocess.run([pip_path, "install", "-r", requirements_path], check=True)
         return "Code execution environment created successfully."
     except subprocess.CalledProcessError as e:
         return f"Error creating code execution environment: {str(e)}"
-
 
 def execute_code(code):
     global running_processes
@@ -924,6 +982,28 @@ tools = [
     }
 ]
 
+def display_tools_friendly(tools):
+    table = Table(title="Available Tools", show_header=True, header_style="bold magenta")
+    table.add_column("Tool Name", style="cyan", no_wrap=True)
+    table.add_column("Description", style="green")
+    table.add_column("Parameters", style="yellow")
+
+    for tool in tools:
+        function = tool['function']
+        name = function['name']
+        description = function['description']
+        
+        params = function['parameters']['properties']
+        param_str = "\n".join([f"{k}: {v.get('description', 'No description')}" for k, v in params.items()])
+        
+        required = function['parameters'].get('required', [])
+        if required:
+            param_str += f"\n\nRequired: {', '.join(required)}"
+
+        table.add_row(name, description, param_str)
+
+    console.print(Panel(table, title="Tool List", expand=False))
+
 async def execute_tool(tool_call: Dict[str, Any]) -> Dict[str, Any]:
     try:
         function_call = tool_call['function']
@@ -1074,6 +1154,52 @@ def reset_conversation():
 
 
 async def main():
+    args = parse_arguments()
+
+    if args.list_models:
+        console.print(Panel(f"""
+        MAIN_MODEL: {MAIN_MODEL}
+        TOOLCHECKER_MODEL: {TOOLCHECKER_MODEL}
+        CODEEDITOR_MODEL: {CODEEDITOR_MODEL}
+        CODEEXECUTION_MODEL: {CODEEXECUTION_MODEL}
+        """, title="Models", style="bold green"))
+        return
+
+    if args.show_system_message:
+        console.print(Panel(update_system_prompt(), title="System Message", style="bold green"))
+        return
+
+    if args.show_tools:
+        display_tools_friendly(tools)
+        return
+
+    if args.use_tool:
+        tool_call = {
+            "function": {
+                "name": args.use_tool,
+                "arguments": json.dumps(await get_tool_arguments(args.use_tool))
+            }
+        }
+        result = await execute_tool(tool_call)
+        console.print(Panel(json.dumps(result, indent=2), title=f"Tool Result: {args.use_tool}", style="bold green"))
+        return
+
+    if args.test_prompt:
+        response = completion(
+            model=MAIN_MODEL,
+            messages=[
+                {"role": "system", "content": update_system_prompt()},
+                {"role": "user", "content": args.test_prompt}
+            ],
+            tools=tools,
+        )
+        tool_calls = response.choices[0].message.tool_calls if response.choices[0].message.tool_calls else []
+        if tool_calls:
+            console.print(Panel(f"Tool picked: {tool_calls[0].function.name}", title="Tool Selection", style="bold green"))
+        else:
+            console.print(Panel("No tool was picked for this prompt.", title="Tool Selection", style="bold yellow"))
+        return
+
     global automode, conversation_history
     console.print(Panel("Welcome to the Multi-Model Engineer Chat with LiteLLM integration!", title="Welcome", style="bold green"))
     console.print(f"LLM Engineer script location: {SCRIPT_DIR}")
