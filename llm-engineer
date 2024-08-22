@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import sys
 import re
 import json
 import asyncio
@@ -8,7 +9,11 @@ import datetime
 import logging
 from typing import Optional, Dict, Any
 import time
+import subprocess
+import threading
+
 from dotenv import load_dotenv
+
 from tavily import TavilyClient
 
 from prompt_toolkit import PromptSession
@@ -24,6 +29,9 @@ from litellm import completion, set_verbose
 
 # Get the directory path of the current script
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Get the current working directory
+CURRENT_DIR = os.getcwd()
 
 # Load environment variables from .env file
 load_dotenv()
@@ -665,6 +673,80 @@ def list_files(path="."):
     except Exception as e:
         return f"Error listing files: {str(e)}"
 
+def create_code_execution_env():
+    try:
+        env_path = os.path.join(SCRIPT_DIR, "code_execution_env")
+        subprocess.run([sys.executable, "-m", "venv", env_path], check=True)
+        
+        if os.name == 'nt':  # Windows
+            pip_path = os.path.join(env_path, "Scripts", "pip")
+        else:  # macOS and Linux
+            pip_path = os.path.join(env_path, "bin", "pip")
+        
+        subprocess.run([pip_path, "install", "-r", os.path.join(SCRIPT_DIR, "requirements.txt")], check=True)
+        return "Code execution environment created successfully."
+    except subprocess.CalledProcessError as e:
+        return f"Error creating code execution environment: {str(e)}"
+
+
+def execute_code(code):
+    global running_processes
+    try:
+        if os.name == 'nt':  # Windows
+            python_path = os.path.join(SCRIPT_DIR, "code_execution_env", "Scripts", "python")
+        else:  # macOS and Linux
+            python_path = os.path.join(SCRIPT_DIR, "code_execution_env", "bin", "python")
+        
+        process = subprocess.Popen(
+            [python_path, "-c", code],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        process_id = id(process)
+        running_processes[process_id] = process
+        
+        stdout, stderr = process.communicate(timeout=10)  # 10 second timeout
+        
+        if process.returncode == 0:
+            return {"output": stdout, "process_id": process_id}
+        else:
+            return {"error": stderr, "process_id": process_id}
+    except subprocess.TimeoutExpired:
+        return {"output": "Process is still running.", "process_id": process_id}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+async def analyze_code_output(code: str, output: str) -> str:
+    try:
+        response = completion(
+            model=CODEEXECUTION_MODEL,
+            messages=[
+                {"role": "system", "content": "You are an AI assistant specialized in analyzing Python code execution output. Provide insights, explanations, or suggestions based on the code and its output."},
+                {"role": "user", "content": f"Code:\n{code}\n\nOutput:\n{output}\n\nPlease analyze this code execution result."}
+            ]
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        logging.error(f"Error in analyzing code output: {str(e)}")
+        return f"Error in analyzing code output: {str(e)}"
+
+def stop_process(process_id):
+    global running_processes
+    if process_id in running_processes:
+        process = running_processes[process_id]
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+        del running_processes[process_id]
+        return f"Process {process_id} has been stopped."
+    else:
+        return f"Process {process_id} not found."
+
 def tavily_search(query):
     try:
         response = tavily.qna_search(query=query, search_depth="advanced")
@@ -805,6 +887,40 @@ tools = [
                 "required": ["query"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_code",
+            "description": "Execute Python code in the isolated code_execution_env environment",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "The Python code to execute"
+                    }
+                },
+                "required": ["code"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "stop_process",
+            "description": "Stop a running process by its ID",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "process_id": {
+                        "type": "integer",
+                        "description": "The ID of the process to stop"
+                    }
+                },
+                "required": ["process_id"]
+            }
+        }
     }
 ]
 
@@ -850,9 +966,24 @@ async def execute_tool(tool_call: Dict[str, Any]) -> Dict[str, Any]:
             result = list_files(tool_input.get("path", "."))
         elif tool_name == "tavily_search":
             result = tavily_search(tool_input["query"])
+        elif tool_name == "execute_code":
+            execution_result = execute_code(tool_input["code"])
+            if 'output' in execution_result:
+                analysis = await analyze_code_output(tool_input["code"], execution_result['output'])
+                result = f"Execution Output:\n{execution_result['output']}\n\nAnalysis:\n{analysis}"
+            else:
+                result = execution_result
+        elif tool_name == "stop_process":
+            result = stop_process(int(tool_input["process_id"]))
         else:
             is_error = True
             result = f"Unknown tool: {tool_name}"
+
+        if isinstance(result, dict) and 'error' in result:
+            is_error = True
+            result = result['error']
+        elif isinstance(result, dict) and 'output' in result:
+            result = result['output']
 
         return {
             "content": result,
@@ -896,10 +1027,13 @@ async def run_goals(response):
 def save_chat():
     # Generate filename
     now = datetime.datetime.now()
-    filename = f"Chat_{now.strftime('%H%M')}.md"
+    filename = f"Chat_{now.strftime('%Y%m%d_%H%M%S')}.md"
+    
+    # Use the current working directory for saving the chat
+    filepath = os.path.join(CURRENT_DIR, filename)
     
     # Format conversation history
-    formatted_chat = "# Claude-3-Sonnet Engineer Chat Log\n\n"
+    formatted_chat = "# LLM Engineer Chat Log\n\n"
     for message in conversation_history:
         if message['role'] == 'user':
             formatted_chat += f"## User\n\n{message['content']}\n\n"
@@ -921,7 +1055,7 @@ def save_chat():
     with open(filename, 'w', encoding='utf-8') as f:
         f.write(formatted_chat)
     
-    return filename
+    return filepath
 
 
 def reset_code_editor_memory():
@@ -939,16 +1073,21 @@ def reset_conversation():
     console.print(Panel("Conversation history, file contents, code editor memory, and code editor files have been reset.", title="Reset", style="bold green"))
 
 
-
-
 async def main():
     global automode, conversation_history
     console.print(Panel("Welcome to the Multi-Model Engineer Chat with LiteLLM integration!", title="Welcome", style="bold green"))
+    console.print(f"LLM Engineer script location: {SCRIPT_DIR}")
+    console.print(f"Current working directory: {CURRENT_DIR}")
     console.print("Type 'exit' to end the conversation.")
     console.print("Type 'automode [number]' to enter Autonomous mode with a specific number of iterations.")
     console.print("Type 'reset' to clear the conversation history.")
-    console.print("Type 'save chat' to save the conversation to a Markdown file.")
+    console.print("Type 'save chat' to save the conversation to a Markdown file in the current directory.")
     console.print("While in automode, press Ctrl+C at any time to exit the automode to return to regular chat.")
+
+    # Create code execution environment
+    console.print(Panel("Creating code execution environment...", style="yellow"))
+    result = create_code_execution_env()
+    console.print(Panel(result, style="green" if "successfully" in result else "red"))
 
     while True:
         user_input = await get_user_input()
@@ -1013,4 +1152,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 

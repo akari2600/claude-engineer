@@ -123,9 +123,68 @@ Special commands:
 - Type 'automode number' to enter Autonomous mode with a specific number of iterations.
 - Type 'save chat' to save the current chat log.
 
+## Autonomous Mode
+
+```mermaid
+graph TD
+    A[Start] --> B[Welcome Message]
+    B --> C{User Input}
+    C -->|'exit'| D[End Program]
+    C -->|'reset'| E[Reset Conversation]
+    E --> C
+    C -->|'save chat'| F[Save Chat to File]
+    F --> C
+    C -->|"automode \[number\]"| G[Enter Automode]
+    G --> H[Get Automode Goal]
+    H --> I{Automode Loop}
+    I --> J[Chat with LLM]
+    J --> K{Exit Condition Met?}
+    K -->|No| L[Increment Iteration]
+    L --> I
+    K -->|Yes| M[Exit Automode]
+    M --> C
+    C -->|Other input| N[Regular Chat with LLM]
+    N --> C
+```
+
+## Agentic Workflow
+Automode should enable workflows like this. This is a work in progress. Imagine basically having multiple instances of LLM Engineer running in their own dev enviroments, each with their own task. The highlighted steps in the following diagram represent a human in the loop.
+
+```mermaid
+flowchart TD
+    A["Start: New Feature/Bug Fix"]:::highlightNode --> B["Create Feature Branch"]
+    B --> C["Write Failing Test"]
+    C --> D["Implement Feature/Fix"]
+    D <--->|Iterative| E["Run Tests"]
+    E -->|Tests Pass| F["Commit Changes"]
+    F --> G["Push to Remote"]
+    G --> H["Create Pull Request"]:::highlightNode
+    H --> I["Automated CI Triggers"]
+    I --> J["Run Unit Tests"]
+    I --> K["Run Integration Tests"]
+    I --> L["Code Quality Checks"]
+    J & K & L --> M{"All Checks Pass?"}
+    M -->|Yes| N["Code Review"]:::highlightNode
+    M --->|No| O["Fix Issues"]
+    O --->|Iterative Fix| G
+    N -->|Approved| P["Merge to Main Branch"]
+    N --->|Changes Requested| O
+    P --> Q["Deploy to Staging"]
+    Q --> R["Run Final Integration Tests"]
+    R -->|Pass| S["Deploy to Production"]:::highlightNode
+    R --->|Fail| T["Rollback and Fix"]
+    T --->|Iterative Fix| O
+    S --> U["End: Feature Live"]
+
+    classDef default fill:#e1d5e7,stroke:#9673a6,stroke-width:2px,color:#333;
+    classDef highlightNode fill:#ffa500,stroke:#d79b00,stroke-width:4px,color:#000;
+    linkStyle default stroke:#333,stroke-width:2px;
+    linkStyle 3,14,16,18,20 stroke:#ff69b4,stroke-width:3px;
+```
+
 ## 🧠 AI Models
 
-LLM Engineer now supports 100+ LLMs, including:
+LLM Engineer now supports 100+ LLMs, thanks to LiteLLM, including:
 - Anthropic's Claude models
 - OpenAI's GPT models
 - Mistral AI models
@@ -133,6 +192,8 @@ LLM Engineer now supports 100+ LLMs, including:
 - And many more!
 
 The specific model used can be configured in the `.env` file.
+
+The full list of 100+ supported models can be found [here](https://docs.litellm.ai/docs/providers).
 
 ## 👥 Contributing
 

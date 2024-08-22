@@ -4,3 +4,4 @@ rich
 aiohttp
 prompt_toolkit
 litellm
+redis
