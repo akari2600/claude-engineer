@@ -5,3 +5,4 @@ venv/
 # Ignore saved chats from llm-engineer
 Chat_*.md
 .DS_Store
+code_execution_env/
